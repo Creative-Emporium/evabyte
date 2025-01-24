@@ -1,11 +1,9 @@
-# main.py
 import argparse
 import torch
 from transformers import AutoTokenizer, Trainer, TrainingArguments
 from datasets import Dataset, load_dataset # Import datasets for potential data handling
 from typing import Dict, List, Optional, Tuple, Union
 
-# --- Import EvaByte components from provided files ---
 from configuration_evabyte import EvaByteConfig
 from modeling_evabyte import EvaByteForCausalLM, EvaByteModel
 from tokenization_evabyte import EvaByteTokenizer
@@ -20,17 +18,13 @@ from transformers.modeling_outputs import (
 )
 
 # --- Define Custom Multimodal Model (Adapt EvaByteForCausalLM) ---
-class MultimodalEvaByteForCausalLM(EvaByteForCausalLM): # Inherit from the original LM
+class MultimodalEvaByteForCausalLM(EvaByteForCausalLM):
     def __init__(self, config: EvaByteConfig):
         super().__init__(config)
-        # --- Add multimodal specific layers here ---
-        # Example:
-        self.visual_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size) # Placeholder - customize based on visual input
-        self.audio_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size)   # Placeholder - customize based on audio input
-        self.video_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size)   # Placeholder - customize based on video input
-        self.multimodal_fusion = torch.nn.Linear(config.hidden_size * 2, config.hidden_size) # Example fusion layer
-
-        # Re-initialize weights if needed, or keep defaults from parent class
+        self.visual_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.audio_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.video_embedding = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.multimodal_fusion = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.post_init()
 
     def forward(
@@ -45,44 +39,43 @@ class MultimodalEvaByteForCausalLM(EvaByteForCausalLM): # Inherit from the origi
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        visual_inputs: Optional[torch.FloatTensor] = None, # New: Visual Input
-        audio_inputs: Optional[torch.FloatTensor] = None,  # New: Audio Input
-        video_inputs: Optional[torch.FloatTensor] = None,  # New: Video Input
+        visual_inputs: Optional[torch.FloatTensor] = None,
+        audio_inputs: Optional[torch.FloatTensor] = None,
+        video_inputs: Optional[torch.FloatTensor] = None,
         return_all_pred_logits: Optional[bool] = None,
-        multibyte_decoding: Optional[bool] = None
+        multibyte_decoding: Optional[bool] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,  # Add token_type_ids here
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
         # --- Handle Multimodal Inputs ---
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
 
         if visual_inputs is not None:
-            visual_embeds = self.visual_embedding(visual_inputs) # Project visual features
-            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, visual_embeds), dim=-1)) # Example fusion
+            visual_embeds = self.visual_embedding(visual_inputs)
+            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, visual_embeds), dim=-1))
 
         if audio_inputs is not None:
             audio_embeds = self.audio_embedding(audio_inputs)
-            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, audio_embeds), dim=-1)) # Example fusion
+            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, audio_embeds), dim=-1))
 
         if video_inputs is not None:
             video_embeds = self.video_embedding(video_inputs)
-            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, video_embeds), dim=-1)) # Example fusion
-
+            inputs_embeds = self.multimodal_fusion(torch.cat((inputs_embeds, video_embeds), dim=-1))
 
         # --- Call the base model's forward method ---
         return super().forward(
-            input_ids=None, # Use inputs_embeds instead of input_ids within base model forward
+            input_ids=None,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds, # Pass the potentially fused embeddings
+            inputs_embeds=inputs_embeds,
             labels=labels,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             return_all_pred_logits=return_all_pred_logits,
-            multibyte_decoding=multibyte_decoding
+            multibyte_decoding=multibyte_decoding,
         )
 
 # --- Data Loading and Preprocessing (Placeholders - Customize based on data format) ---
@@ -106,17 +99,25 @@ def load_data(data_path, modality):
     else:
         raise ValueError(f"Unsupported modality: {modality}")
 
-def load_data(data_path, modality):
+def load_data(data_path, modality, eval_data_path=None):
     print(f"Loading {modality} data from: {data_path}")
     if modality == "text":
-        # Load the "wikitext" dataset, specifically the "wikitext-2-raw-v1" subset
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='train') # Load the train split
+        # Load the "wikitext" dataset
+        train_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='train')
+        small_train_dataset = train_dataset.select(range(len(train_dataset) // 20)) # 5% for training
 
-        # Get a small portion (e.g., 5% - adjust the range as needed)
-        small_dataset = dataset.select(range(len(dataset) // 20)) # 5% of the dataset
+        print(f"Using a subset of Wikitext training set with {len(small_train_dataset)} examples.")
 
-        print(f"Using a subset of Wikitext with {len(small_dataset)} examples.")
-        return small_dataset # Return the smaller dataset
+        print("Sample of dataset *immediately after loading* (small_train_dataset[0]):", small_train_dataset[0]) # Debug print
+
+        eval_dataset = None # Initialize eval_dataset to None
+        if eval_data_path is not None: # Check if eval_data_path is provided
+            eval_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='validation') # Load validation split for evaluation
+            small_eval_dataset = eval_dataset.select(range(len(eval_dataset) // 20)) # Take a small subset for eval too, if desired
+            print(f"Using a subset of Wikitext validation set for evaluation with {len(small_eval_dataset)} examples.")
+            return small_train_dataset, small_eval_dataset # Return both train and eval datasets
+        
+        return small_train_dataset, eval_dataset
         
 def preprocess_data(dataset, modality, tokenizer=None, image_processor=None):
     print(f"Preprocessing {modality} data...")
@@ -156,7 +157,7 @@ def preprocess_data(dataset, modality, tokenizer=None, image_processor=None):
 def train_model(model, train_dataset, eval_dataset, training_args, modality):
 
     class MultimodalTrainer(Trainer): # Custom Trainer if needed
-        def compute_loss(self, model, inputs, return_outputs=False):
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): # Modified definition
             # Customize loss computation if needed for multimodal inputs/outputs
             labels = inputs.get("labels")
             outputs = model(**inputs) # Pass all relevant inputs to forward
@@ -204,12 +205,10 @@ def main():
     model = MultimodalEvaByteForCausalLM.from_pretrained(args.model_name_or_path, config=config, torch_dtype=torch.bfloat16, trust_remote_code=True).to("cpu") # Or MultimodalEvaByteForCausalLM(config).to("cuda")
 
     # --- Load and Preprocess Data ---
-    train_dataset = load_data(args.train_data_path, args.modality)
+    train_dataset, eval_dataset = load_data(args.train_data_path, args.modality, args.eval_data_path) # Load eval dataset too
     train_dataset = preprocess_data(train_dataset, args.modality, tokenizer, image_processor)
-
-    eval_dataset = None # Optional Evaluation Dataset - load and preprocess similarly if args.eval_data_path is provided
-    if args.eval_data_path:
-        eval_dataset = load_data(args.eval_data_path, args.modality)
+    print("Sample of train_dataset after preprocessing:", train_dataset[0]) # Print the first example
+    if eval_dataset is not None: # Only preprocess if eval_dataset is loaded
         eval_dataset = preprocess_data(eval_dataset, args.modality, tokenizer, image_processor)
 
 
@@ -221,21 +220,22 @@ def main():
         num_train_epochs=args.num_train_epochs,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        evaluation_strategy=args.evaluation_strategy,
+        evaluation_strategy=args.evaluation_strategy, # Keep evaluation strategy
         eval_steps=args.eval_steps,
-        learning_rate=5e-5, # Example learning rate - tune as needed
-        weight_decay=0.01,    # Example weight decay
-        warmup_steps=500,     # Example warmup steps
-        fp16=False,           # Set to True if using mixed precision
-        bf16=True,           # Recommended for better performance if hardware supports it
-        gradient_checkpointing=True, # Enable gradient checkpointing to save memory
-        dataloader_num_workers=4,    # Adjust based on your CPU cores and data loading speed
-        save_total_limit=2,       # Optional: Only save the last 2 checkpoints
-        remove_unused_columns=False # Keep columns needed for multimodal training
+        learning_rate=5e-5, 
+        weight_decay=0.01,    
+        warmup_steps=500,     
+        fp16=False,           
+        bf16=True,           
+        gradient_checkpointing=False, 
+        dataloader_num_workers=4,    
+        save_total_limit=2,
+        report_to=[],       
+        remove_unused_columns=False
     )
 
     # --- Train the Model ---
-    trainer = train_model(model, train_dataset, eval_dataset, training_args, args.modality)
+    trainer = train_model(model, train_dataset, eval_dataset, training_args, args.modality) # Pass eval_dataset to train_model
 
     # --- Save Trained Model and Processor ---
     trainer.save_model(args.output_dir)
